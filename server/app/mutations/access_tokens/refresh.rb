@@ -15,7 +15,7 @@ module AccessTokens
     end
 
     def execute
-      new_token = AccessTokens::Create.run(
+      AccessTokens::Create.run(
         user: @old_token.user,
         scopes: @old_token.scopes
       ).result
