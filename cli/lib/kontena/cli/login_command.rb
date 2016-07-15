@@ -24,7 +24,7 @@ class Kontena::Cli::LoginCommand < Clamp::Command
     response = do_login(email, password)
 
     if response
-      update_master_info(name, url, response['access_token'], email)
+      update_master_info(name, url, response['access_token'], response['refresh_token'], response['expires_in'], email)
       display_logo
       puts ''
       puts "Logged in as #{response['user']['name'].green}"
@@ -96,13 +96,18 @@ class Kontena::Cli::LoginCommand < Clamp::Command
   # @param [String] name
   # @param [String] url
   # @param [String] token
+  # @param [String] refresh_token
+  # @param [Fixnum] expires_in
+  # @param [String] email
   #
-  def update_master_info(name, url, token, email)
+  def update_master_info(name, url, token, refresh_token, expires_in, email)
     name = name || 'default'
     master = {
         'name' => name,
         'url' => url,
         'token' => token,
+        'refresh_token' => refresh_token,
+        'expires_at' => expires_in.to_i + Time.now.utc.to_i,
         'email' => email
     }
 

@@ -9,11 +9,32 @@ module Kontena
       end
 
       def require_token
+        if ENV['KONTENA_TOKEN']
+          token = ENV['KONTENA_TOKEN']
+        else
+          master_version = Gem::Version.new(api_url_version)
+          if master_version < Gem::Version.new('0.15.0')
+            token = current_master['token']
+          elsif current_master['expires_at']
+            if current_master['expires_at'] < Time.now.utc.to_i
+              reset_client
+              @settings = nil
+              client.refresh_token
+            end
+            token = current_master['token']
+          else
+            raise ArgumentError.new("You need to log in again using: kontena login")
+          end
+        end
         token = ENV['KONTENA_TOKEN'] || current_master['token']
         unless token
           raise ArgumentError.new("Please login first using: kontena login")
         end
         token
+      end
+
+      def api_url_version
+        Kontena::Client.new(api_url).server_version
       end
 
       def client(token = nil)
