@@ -40,6 +40,6 @@ class AccessToken
   end
 
   def expired?
-    expires_at < Time.now.utc || used?
+    expires_at && expires_at < Time.now.utc || used?
   end
 end
