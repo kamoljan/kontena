@@ -14,7 +14,7 @@ module AccessTokens
       AccessToken.create!(
         user: self.user,
         scopes: self.scopes,
-        expires_at: 3.hours.from_now,
+        expires_at: Time.now.utc + 3.hours,
         token: "kontena-#{SecureRandom.base64(64)}",
         refresh_token: SecureRandom.base64(64)
       )

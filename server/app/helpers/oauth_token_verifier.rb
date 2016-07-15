@@ -19,6 +19,10 @@ module OAuth2TokenVerifier
         return
       end
 
+      if token.expired?
+        halt_request(401, {error: 'Session expired'})
+        return
+      end
       self.current_access_token = token
     end
   end
