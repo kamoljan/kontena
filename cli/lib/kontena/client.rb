@@ -1,54 +1,130 @@
 require 'json'
 require 'excon'
+require 'uri'
 require_relative 'errors'
 require_relative 'cli/version'
 
 module Kontena
   class Client
 
-    class ConfigParser
-      include Kontena::Cli::Common
-    end
+    CLIENT_ID     = 'f6c8f109754c472f955a2eec24e80f9f'
+    CLIENT_SECRET = '311908953ffe489da4c1403c178bdd6e'
 
-    attr_accessor :default_headers, :path_prefix
+    CONTENT_URLENCODED = 'application/x-www-form-urlencoded'.freeze
+    CONTENT_JSON       = 'application/json'.freeze
+    JSON_REGEX         = /application\/(.+?\+)?json/.freeze
+    CONTENT_TYPE       = 'Content-Type'.freeze
+    ACCEPT             = 'Accept'.freeze
+    AUTHORIZATION      = 'Authorization'.freeze
+
+    attr_accessor :default_headers
+    attr_accessor :path_prefix
     attr_reader :http_client
     attr_reader :last_response
     attr_reader :options
+    attr_reader :token
+    attr_reader :logger
+    attr_reader :api_url
 
     # Initialize api client
     #
     # @param [String] api_url
     # @param [Hash] default_headers
-    def initialize(api_url, default_headers = {})
-      @options = 
-      @options = default_headers.delete(:options)
+    def initialize(api_url, token = {}, options = {})
+      @api_url, @token, @options = api_url, token, options
+      @logger = Logger.new(STDOUT)
+      @logger.level = ENV["DEBUG"] ? Logger::DEBUG : Logger::INFO
+      @logger.progname = 'CLIENT'
+      @options[:default_headers] ||= {}
       Excon.defaults[:ssl_verify_peer] = false if ignore_ssl_errors?
       @http_client = Excon.new(api_url)
       @default_headers = {
-        'Accept' => 'application/json',
-        'Content-Type' => 'application/json',
+        ACCEPT => CONTENT_JSON,
+        CONTENT_TYPE => CONTENT_JSON,
         'User-Agent' => "kontena-cli/#{Kontena::Cli::VERSION}"
-      }.merge(default_headers)
-      @api_url = api_url
-      @path_prefix = '/v1/'
+      }.merge(options[:default_headers])
+      @path_prefix = options[:path_prefix] || '/v1/'
+      logger.debug "Client initialized with api_url: #{@api_url} token: #{token.nil?.to_s} token_parent: #{token['parent_type'] || 'none'} path_prefix: #{@path_prefix}"
+    end
+
+    def authentication_ok?(token_verify_path)
+      return false unless token
+      return false unless token['access_token']
+      return false unless token_verify_path
+      logger.debug 'Authentication verification request token validations pass'
+      final_path = token_verify_path.gsub(/\:access\_token/, token['access_token'])
+      request(path: final_path)
+      true
+    rescue
+      false
+    end
+
+    def code_login(code, auth_url)
+      handle_login_response(
+        request(
+          http_method: :post,
+          path: '/v1/token',
+          query: { grant_type: 'code', code: code, url: auth_url },
+          auth: false
+        )
+      )
+    end
+
+    # Handles token object update after login request.
+    # Does not write configuration.
+    def handle_login_response(response)
+      response = {'error' => response} unless response.kind_of?(Hash)
+      if response['access_token']
+        if response['user']
+          token.username = response['user']['username'] || response['user']['email']
+        end
+        token['access_token']  = response['access_token']
+        token['refresh_token'] = response['refresh_token']
+        token['expires_at']    = in_to_at(response['expires_in'])
+        true
+      else
+        raise Kontena::Errors::StandardError.new(400, response['error'])
+        false
+      end
+    end
+
+    # Build user credentials login request parameters.
+    def password_login_params(email, password, scope=nil)
+      {
+          username: email,
+          password: password,
+          grant_type: 'password',
+          scope: scope || 'user'
+      }
+    end
+
+    # Perform user credentials login to auth provider.
+    #
+    # @param [String] username
+    # @param [String] password
+    # @param [String] path_to_login_endpoint
+    def login(email, password, login_path)
+      return false unless token
+      return false unless token.respond_to?(:config)
+      token.access_token = nil # reset token
+
+      handle_login_response(
+        request(
+          http_method: :post,
+          path: login_path,
+          body: password_login_params(email, password),
+          expects: [200, 201, 400, 401, 403]
+        )
+      )
     end
 
     # Return server version from a Kontena master
     #
     # @return [String] version_string
     def server_version
-      request_options = {
-          method: :get,
-          expects: [200],
-          path: '/',
-          headers: { 'Accept' => 'application/json' },
-          body: nil,
-          query: nil
-      }
-      @last_response = http_client.request(request_options)
-      data = parse_response
-      data['version']
+      request(auth: false, expects: 200)['version']
     rescue
+      logger.debug "Server version exception: #{$!} #{$!.message}"
       nil
     end
 
@@ -59,30 +135,7 @@ module Kontena
     # @param [Hash] headers
     # @return [Hash]
     def get(path, params = nil, headers = {})
-      request(:get, path, nil, params, headers)
-    end
-
-    # Get request
-    #
-    # @param [String] path
-    # @param [Lambda] response_block
-    # @param [Hash,NilClass] params
-    # @param [Hash] headers
-    def get_stream(path, response_block, params = nil, headers = {})
-      http_client.request(
-        method: :get,
-        expects: [200],
-        read_timeout: 360,
-        path: request_uri(path),
-        query: params,
-        headers: request_headers(headers),
-        response_block: response_block
-      )
-    rescue Excon::Errors::Unauthorized 
-      refresh_token and retry
-      handle_error_response(@last_response)
-    rescue
-      handle_error_response(@last_response)
+      request(path: path, query: params, headers: headers)
     end
 
     # Post request
@@ -93,7 +146,7 @@ module Kontena
     # @param [Hash] headers
     # @return [Hash]
     def post(path, obj, params = {}, headers = {})
-      request(:post, path, obj, params, headers)
+      request(http_method: :post, path: path, body: obj, query: params, headers: headers)
     end
 
     # Put request
@@ -104,7 +157,7 @@ module Kontena
     # @param [Hash] headers
     # @return [Hash]
     def put(path, obj, params = {}, headers = {})
-      request(:put, path, obj, params, headers)
+      request(http_method: :put, path: path, body: obj, query: params, headers: headers)
     end
 
     # Delete request
@@ -115,88 +168,155 @@ module Kontena
     # @param [Hash] headers
     # @return [Hash]
     def delete(path, body = nil, params = {}, headers = {})
-      request(:delete, path, body, params, headers)
+      request(http_method: :delete, path: path, body: body, query: params, headers: headers)
     end
 
-    # HTTP request
+    # Get stream request
     #
-    # @param [Symbol] http_method
     # @param [String] path
-    # @param [Object] obj
-    # @param [Hash] params
+    # @param [Lambda] response_block
+    # @param [Hash,NilClass] params
     # @param [Hash] headers
-    # @return [Hash]
-    def request(http_method, path, obj = nil, params = {}, headers = {})
+    def get_stream(path, response_block, params = nil, headers = {})
+      request(path: path, query: params, headers: headers, response_block: response_block)
+    end
+
+
+    # Perform a HTTP request. Will try to refresh the access token if it's
+    # expired or if the server responds with HTTP 401.
+    #
+    # @param http_method [Symbol] :get, :post, etc
+    # @param path [String] if it starts with / then prefix won't be used.
+    # @param body [Hash, String] will be encoded using #encode_body
+    # @param query [Hash] url query parameters
+    # @param headers [Hash] extra headers for request.
+    # @param response_block [Proc] for streaming requests, must respond to #call
+    # @param expects [Array] raises unless response status code matches this list.
+    # @param auth [Boolean] use token authentication default = true
+    # @return [Hash, String] response parsed response object
+    def request(http_method: :get, path:'/', body: nil, query: {}, headers: {}, response_block: nil, expects: [200, 201], auth: true)
       retried ||= false
+      if auth && token && token.respond_to?(:expired?) && token.expired?
+        raise Excon::Errors::Unauthorized, 'Token expired or not valid, you need to login again, use: kontena login'
+      end
       request_headers = request_headers(headers)
+      request_headers.delete(AUTHORIZATION) unless auth
       request_options = {
           method: http_method,
-          expects: [200, 201],
-          path: request_uri(path),
+          expects: Array(expects),
+          path: path.start_with?('/') ? path : request_uri(path),
           headers: request_headers,
-          body: obj.nil? ? nil : encode_body(obj, request_headers['Content-Type']),
-          query: params
+          body: body.nil? ? nil : encode_body(body, request_headers[CONTENT_TYPE]),
+          query: query
       }
+      request_options.merge!(response_block: response_block) if response_block
       @last_response = http_client.request(request_options)
       parse_response
     rescue Excon::Errors::Unauthorized
-      unless retried
-        retried = true
-        token = refresh_token_from_config
-        if token
-          refresh_token(token) and retry
-        end
+      logger.debug 'Access token expired'
+      if retried || !token.respond_to?(:config)
+        raise Kontena::Errors::StandardError.new(401, 'The access token has expired and needs to be refreshed')
       end
-      handle_error_response(@last_response)
+      retried = true
+      retry if refresh_token
+      handle_error_response
+    rescue Excon::Errors::NotFound
+      raise Kontena::Errors::StandardError.new(404, 'Not found')
+    rescue Excon::Errors::Forbidden
+      raise Kontena::Errors::StandardError.new(403, 'Access denied')
     rescue
-      handle_error_response(@last_response)
+      logger.debug "Request exception: #{$!} - #{$!.message}\n#{$!.backtrace.join("\n")}"
+      handle_error_response
     end
 
-    def refresh_token_from_config
-      return nil if ENV['KONTENA_TOKEN']
-      token = default_headers.fetch('Authorization', '').split(' ').last
-      config = ConfigParser.new
-      server_data = config.settings['servers'].find{|s| s['url'] == api_url && s['token'] == token}
-      server_data ? server_data['refresh_token'] : nil
+    # Request a code from auth provider.
+    def generate_code(authorization_path, scopes = nil, expires_in = nil, note = nil)
+      generate_token(authorization_path, 'code', scopes, expires_in, note)
     end
 
-    def refresh_token(refresh_token, refresh_endpoint = '/v1/auth/token', expires_in = 10800, client_id=nil, client_secret=nil)
-      ENV["DEBUG"] && puts('Refreshing master access token')
-      request_options = {
-        method: :post,
-        expects: [200],
-        path: refresh_endpoint,
-        headers: request_headers.reject{|k,_| k == 'Authorization'},
-        body: nil,
-        params: {
-          grant_type: 'refresh_token',
+    # Request a token from auth provider
+    def generate_token(authorization_path, response_type, scopes = nil, expires_in = nil, note = nil)
+      return false unless token
+      response = request(
+        http_method: :post,
+        path: authorization_path,
+        auth: false,
+        body: {
+          #client_id: ENV['KONTENA_CLIENT_ID'] || CLIENT_ID,
+          #client_secret: ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET,
+          note: note,
+          response_type: response_type,
           expires_in: expires_in,
-          client_id: client_id,
-          client_secret: client_secret,
-          refresh_token: refresh_token
-        }
+          scopes: scopes || []
+        },
+      )
+      response && response['code']
+    end
+
+    # Determine refresh_token request path from token object data
+    #
+    # @return [String]
+    def token_refresh_path
+      if token.respond_to?(:parent) && token['parent_type'] == :account
+        if token.parent.respond_to?(:account)
+          config.find_account(token.parent.account).token_refresh_path
+        else
+          token.parent.token_refresh_path
+        end
+      elsif token[:parent_type] = :master
+        '/v1/auth/token'
+      end
+    end
+
+    # Build a token refresh request param hash
+    #
+    # @return [Hash]
+    def refresh_request_params
+      {
+        refresh_token: token['refresh_token'],
+        grant_type: 'refresh_token',
+        client_id: ENV['KONTENA_CLIENT_ID'] || CLIENT_ID,
+        client_secret: ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET
       }
-      @last_response = http_client.request(request_options)
-      data = parse_response
-      if data['access_token'] && data['refresh_token'] && data['expires_in']
-        old_token = default_headers.fetch('Authorization', '').split(' ').last
-        default_headers['Authorization'] = "Bearer #{data['access_token']}"
-        config = ConfigParser.new
-        server_index = config.settings['servers'].find_index{|s| s['url'] == api_url && s['token'] == old_token}
-        master_config = config.settings['servers'][server_index]
-        master_config['token']         = data['access_token']
-        master_config['refresh_token'] = data['refresh_token']
-        master_config['expires_at']    = data['expires_in'].to_i + Time.now.utc.to_i
-        config.settings['servers'][server_index] = master_config
-        config.save_settings
-        master_config
-      else
-        ENV["DEBUG"] && puts('Master access token refresh failed, response does not have required keys')
-        nil
+    end
+
+    # Perform refresh token request to auth provider.
+    # Updates the client's Token object and writes changes to 
+    # configuration.
+    #
+    # @return [Boolean] success?
+    def refresh_token
+      logger.debug "Performing token refresh"
+      return false if token.nil?
+      return false if token['refresh_token'].nil?
+      path = token_refresh_path
+      logger.debug "Token refresh url: #{api_url} path: #{path || 'unknown'}"
+      return false unless path
+      logger.debug "Client token validations pass"
+      response = request(
+        http_method: :post,
+        path: path,
+        body: refresh_request_params,
+        headers: { CONTENT_TYPE => CONTENT_URLENCODED },
+        expects: [200, 201, 400, 401, 403],
+        auth: false
+      )
+      if response && response['access_token']
+        logger.debug "Got response to refresh request"
+        token.access_token  = response['access_token']
+        token.refresh_token = response['refresh_token']
+        expires_in = response['expires_in'].to_i
+        expires_at = expires_in + Time.now.utc.to_i
+        token.expires_at = expires_in < 1 ? 0 : expires_at
+        token.config.write
+        true
+      else 
+        logger.debug 'Got null or bad response to refresh request'
+        false
       end
     rescue
-      ENV["DEBUG"] && puts("Master access token refresh exception: #{$!} - #{$!.message}")
-      nil
+      logger.debug "Access token refresh exception: #{$!} - #{$!.message}"
+      false
     end
 
     private
@@ -210,35 +330,50 @@ module Kontena
       "#{path_prefix}#{path}"
     end
 
+    def authorization_header
+      if token['access_token']
+        {AUTHORIZATION => "Bearer #{token['access_token']}"}
+      else
+        {}
+      end
+    end
+
     ##
-    # Get request headers
+    # Build request headers. Removes empty headers.
+    # @example
+    #   request_headers('Authorization' => nil)
     #
     # @param [Hash] headers
     # @return [Hash]
     def request_headers(headers = {})
-      @default_headers.merge(headers)
+      headers = @default_headers.merge(authorization_header).merge(headers)
+      headers.reject{|_,v| v.nil? || (v.respond_to?(:empty?) && v.empty?)}
     end
 
     ##
-    # Encode body based on content type
+    # Encode body based on content type.
     #
     # @param [Object] body
     # @param [String] content_type
+    # @return [String] encoded_content
     def encode_body(body, content_type)
-      if content_type == 'application/json'
+      if content_type =~ JSON_REGEX # vnd.api+json should pass as json
         dump_json(body)
+      elsif content_type == CONTENT_URLENCODED && body.kind_of?(Hash)
+        URI.encode_www_form(body)
       else
         body
       end
     end
 
     ##
-    # Parse response
+    # Parse response. If the respons is JSON, returns a Hash representation.
+    # Otherwise returns the raw body.
     #
     # @param [HTTP::Message]
-    # @return [Object]
+    # @return [Hash,String]
     def parse_response
-      if response.headers['Content-Type'].include?('application/json')
+      if last_response.headers[CONTENT_TYPE] =~ JSON_REGEX
         parse_json(last_response.body)
       else
         last_response.body
@@ -251,7 +386,10 @@ module Kontena
     # @param [String] json
     # @return [Hash,Object,NilClass]
     def parse_json(json)
-      JSON.parse(json) rescue nil
+      JSON.parse(json)
+    rescue
+      logger.debug "JSON parse exception: #{$!} : #{$!.message}"
+      nil
     end
 
     ##
@@ -269,12 +407,21 @@ module Kontena
     end
 
     # @param [Excon::Response] response
-    def handle_error_response(response)
-      message = response.body
-      if response.status == 404 && message == ''
-        message = 'Not found'
+    def handle_error_response
+      raise $!, $!.message unless last_response
+      raise Kontena::Errors::StandardError.new(last_response.status, last_response.body)
+    end
+
+    # Convert expires_in into expires_at
+    #
+    # @param [Fixnum] seconds_till_expiration
+    # @return [Fixnum] expires_at_unix_timestamp
+    def in_to_at(expires_in)
+      if expires_in.to_i < 1
+        0
+      else
+        Time.now.utc.to_i + expires_in.to_i
       end
-      raise Kontena::Errors::StandardError.new(response.status, message)
     end
   end
 end

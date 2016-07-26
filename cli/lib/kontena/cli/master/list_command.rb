@@ -4,8 +4,8 @@ module Kontena::Cli::Master
 
     def execute
       puts '%-24s %-30s' % ['Name', 'Url']
-      current_server = settings['current_server']
-      settings['servers'].each do |server|
+      current_server = config.current_server
+      config.servers.each do |server|
         if server['name'] == current_server
           name = "* #{server['name']}"
         else

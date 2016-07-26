@@ -31,6 +31,10 @@ class Server < Roda
         r.run V1::PingApi
       end
 
+      r.on 'token' do
+        r.run V1::TokenApi
+      end
+
       r.post 'auth' do
         r.run V1::AuthApi
       end

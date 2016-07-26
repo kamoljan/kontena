@@ -18,7 +18,8 @@ module Kontena::Cli::Grids
       payload[:initial_size] = initial_size if initial_size
       grid = client(token).post('grids', payload)
       if grid
-        self.current_grid = grid
+        config.current_grid = grid['name']
+        config.write
         puts "Using grid: #{grid['name'].cyan}"
       end
     end

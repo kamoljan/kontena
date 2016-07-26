@@ -1,5 +1,4 @@
 require 'httpclient'
-require_relative '../../mutations/access_tokens/create'
 
 module AuthService
   class Client
@@ -16,10 +15,12 @@ module AuthService
 
     attr_accessor :default_headers
     attr_reader :http_client
+    attr_reader :base_url
 
     # Initialize api client
     #
-    def initialize
+    def initialize(base_url=nil)
+      @base_url = base_url || api_url
       @http_client = HTTPClient.new
       @http_client.ssl_config.ssl_version = :TLSv1_2
       @default_headers = {'Accept' => 'application/json', 'Content-Type' => 'application/json'}
@@ -30,7 +31,7 @@ module AuthService
     end
 
     def authenticate(obj)
-      response = post("#{api_url}/v1/auth", obj)
+      response = post("v1/auth", obj)
 
       if response.nil?
         return nil
@@ -38,15 +39,13 @@ module AuthService
       response['user']
     end
 
-    private
-
     def post(path, obj, params = {})
       request_options = {
           header: default_headers,
           body: JSON.dump(obj),
           query: params
       }
-      handle_response(http_client.post(path, request_options))
+      handle_response(http_client.post([base_url.gsub(/\/$/, ''), path.gsub(/^\//, '')].join('/'), request_options))
     end
 
     def handle_response(response)

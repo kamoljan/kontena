@@ -24,6 +24,9 @@ module OAuth2TokenVerifier
         return
       end
       self.current_access_token = token
+    else
+      halt_request(403, {error: 'Access denied'})
+      return
     end
   end
 end

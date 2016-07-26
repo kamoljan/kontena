@@ -10,8 +10,9 @@ module Kontena::Cli::Grids
     def execute
       require_api_url
       grid = find_grid_by_name(name)
-      if !grid.nil?
-        self.current_grid = grid
+      if grid
+        config.current_grid = grid['name']
+        config.write
         puts "Using grid: #{grid['name'].cyan}"
       else
         abort "Could not resolve grid by name [#{name}]. For a list of existing grids please run: kontena grid list".colorize(:red)

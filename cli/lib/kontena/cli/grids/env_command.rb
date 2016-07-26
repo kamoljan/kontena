@@ -21,7 +21,8 @@ module Kontena::Cli::Grids
 
         prefix = export? ? 'export ' : ''
 
-        server = settings['servers'].find{|s| s['name'] == settings['current_server']}
+        server = config.current_master
+
         if server
           puts "#{prefix}KONTENA_URI=#{server['url'].sub('http', 'ws')}"
           puts "#{prefix}KONTENA_TOKEN=#{server['token']}"
