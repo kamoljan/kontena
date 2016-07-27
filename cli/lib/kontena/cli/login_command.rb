@@ -19,7 +19,7 @@ class Kontena::Cli::LoginCommand < Clamp::Command
   def code_exchange_url
     [
       current_account.url.gsub(/\/$/, ''),
-      current_account.code_exchange_path
+      current_account.code_exchange_path.gsub(/^\//, '')
     ].join('/')
   end
 
@@ -65,12 +65,8 @@ class Kontena::Cli::LoginCommand < Clamp::Command
     @current_account
   end
 
-  def master_account?
-    @master_account ||= current_account.name.eql?('master')
-  end
-
   def master_supports_external_auth?
-    server_version >= Gem::Version.new('0.14.4')
+    server_version >= Gem::Version.new('0.15.0')
   end
 
   def legacy_master?
@@ -156,35 +152,20 @@ class Kontena::Cli::LoginCommand < Clamp::Command
         exit 1
       end
 
-      # If it's pre-oauth master, make sure we are using the "master" account.
-      if legacy_master? && self.account && self.account != 'master'
-        puts "Server version '#{server_version}' does not support external authentication.".colorize(:red)
+      if legacy_master?
+        puts "The server is running Kontena Master version #{server_version}. Upgrade the server or use CLI version < 0.15.0."
         exit 1
-      else
-        self.account = 'master'
       end
     else
-      # If url is not defined, we can not use master to login
-      # TODO: perhaps log in to config.current_master instead of failing?
-      if (self.account && self.account == 'master') || (config.current_account && config.current_account.name == 'master')
-        puts "URL not provided and master authentication selected."
-        exit 1
-      end
+      logger.debug "No master url provided, performing auth provider login only."
     end
 
     # From this point forward we need an account to log in to.
     require_account
-
-    # If logging in to a legacy master, set the url of current authentication target to the
-    # provided url and use token of current master instead of current account
-    if master_account?
-      current_account.url = self.url
-      self.current_token = current_server_token
-    else
-      self.current_token = current_account_token
-    end
+    self.current_token = current_account_token
 
     logger.debug "Testing if existing authentication is valid"
+
     if login_client.authentication_ok?(current_account.token_verify_path)
       logger.debug "Existing authentication to #{current_account.name} works, password login not required."
     else
@@ -196,13 +177,8 @@ class Kontena::Cli::LoginCommand < Clamp::Command
       if success
         config.current_account = current_account.name
         logger.debug "Resource owner password authentication to #{current_account.name} successful."
-        if master_account?
-          current_server.account = 'master'
-          update_server_to_config
-        else
-          current_server.account = current_account.name
-          update_account_to_config
-        end
+        current_server.account = current_account.name if self.url
+        update_account_to_config
         config.write
       else
         puts 'Login failed'.colorize(:red)
@@ -212,17 +188,12 @@ class Kontena::Cli::LoginCommand < Clamp::Command
 
     display_logo
 
-    # If url was not provided
-    if self.url && self.url == current_account.url
-      logger.debug "Login to master complete."
-      config.write
-      exit 0
-    elsif !self.url
+    if self.url
+      logger.debug "Logged in to authentication provider, need to authenticate to master."
+    else
       logger.debug "Login to auth provider complete, no master selected, exiting."
       config.write
       exit 0
-    else
-      logger.debug "Logged in to authentication provider, need to authenticate to master."
     end
 
     logger.debug "Requesting code generation from authentication provider"
@@ -244,6 +215,7 @@ class Kontena::Cli::LoginCommand < Clamp::Command
     success = master_client.code_login(code, code_exchange_url)
     if success
       logger.debug "Master code login succesful."
+      config.current_server = self.name
       puts "Authenticated to master at #{current_server.url}"
       puts
     else
@@ -291,7 +263,7 @@ Copyright (c)2016 Kontena, Inc.
 LOGO
     puts logo
     print "Logged in".colorize(:green)
-    current_user = current_token.parent.username || current_account.username
+    current_user = (current_token.parent && current_token.parent.username) || current_account.username
     if current_user
       print " as ".colorize(:green)
       print current_user.colorize(:yellow)
@@ -305,12 +277,8 @@ LOGO
     else
       print current_master.name.colorize(:yellow)
       print " (#{current_master.url})"
-      if current_master.account == 'master'
-        puts
-      else
-        print " using account on ".colorize(:green)
-        puts current_master.account.colorize(:yellow)
-      end
+      print " using account on ".colorize(:green)
+      puts current_master.account.colorize(:yellow)
     end
   end
 end
