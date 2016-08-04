@@ -70,9 +70,15 @@ module Mongodb
 
     def migrate_without_lock
       migrations.each do |migration|
-        unless already_migrated?(migration)
+        if already_migrated?(migration)
+          info "Already migrated #{migration}" if ENV["DEBUG"]
+        else
           info "migrating #{migration.name}"
-          migration.migrate(:up)
+          begin
+            migration.migrate(:up)
+          rescue
+            info "Migration exception: #{$!} #{$!.message}\n#{$!.backtrace}" if ENV["DEBUG"]
+          end
           save_migration_version(migration)
         end
       end

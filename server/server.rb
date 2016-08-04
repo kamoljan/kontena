@@ -1,6 +1,7 @@
 require 'logger'
 require_relative 'app/boot'
 require_relative 'app/boot_jobs'
+require_relative 'app/middlewares/token_authentication'
 
 Dir[__dir__ + '/app/routes/v1/*.rb'].each {|file| require file }
 Logger.class_eval { alias :write :'<<' }
@@ -12,8 +13,23 @@ class Server < Roda
     logger = nil
   else
     logger = Logger.new(STDOUT)
+    logger.progname = 'API'
   end
   use Rack::CommonLogger, logger
+
+  use(
+    TokenAuthentication,
+    exclude: [
+      '/',
+      '/v1/ping',
+      '/v1/auth',
+      '/cb'
+    ],
+    soft_exclude: [
+      '/v1/token'
+    ]
+  )
+
   plugin :json
 
   route do |r|
@@ -24,6 +40,10 @@ class Server < Roda
         tagline: 'The Container Platform',
         version: VERSION
       }
+    end
+
+    r.on 'cb' do
+      r.run V1::CallbackApi
     end
 
     r.on 'v1' do

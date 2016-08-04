@@ -177,8 +177,8 @@ module Kontena
         {
           name: 'kontena',
           url: 'https://auth2.kontena.io',
-          code_exchange_path: '/v1/auth2/token',
-          token_refresh_path: '/v1/auth2/token',
+          code_exchange_path: '/v1/oauth2/token',
+          token_refresh_path: '/v1/oauth2/token',
           token_verify_path: '/v1/authorizations',
           authorization_path: '/v1/authorizations',
           applications_path: '/v1/applications',
@@ -390,11 +390,15 @@ module Kontena
       # @raise [ArgumentError] if server by that name doesn't exist
       def current_master=(name)
         @current_master_index = nil
-        index = find_server_index(name.respond_to?(:name) ? name.name : name)
-        if index
-          self.current_server = servers[index].name
+        if name.nil?
+          self.current_server = nil
         else
-          raise ArgumentError, "Server '#{name}' does not exist, can't add as current master."
+          index = find_server_index(name.respond_to?(:name) ? name.name : name)
+          if index
+            self.current_server = servers[index].name
+          else
+            raise ArgumentError, "Server '#{name}' does not exist, can't add as current master."
+          end
         end
       end
 

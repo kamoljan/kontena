@@ -12,16 +12,32 @@ class User
   has_and_belongs_to_many :roles
 
   field :email, type: String
+  field :name,  type: String
   field :external_id, type: String
+  field :member_of, type: Array
+  field :invite_code, type: String
+
   validates :email,
             uniqueness: true,
             presence: true,
-            format: { with: /\A([^@\s]+)@((?:[-a-z0-9]+\.)+[a-z]{2,})\Z/i }
+            format: { with: /\A([^@\s]+)@((?:[-a-z0-9]+\.)+[a-z]{2,})\Z/i },
+            unless: :has_invite_code_or_is_local_admin?
 
   index({ email: 1 }, { unique: true })
+  index({ external_id: 1 }, { unique: true })
+
+  def has_invite_code_or_is_local_admin?
+    self[:email] == 'admin' || !self[:invite_code].nil?
+  end
 
   def name
-    self.email
+    self[:name] || self[:email]
+  end
+
+  def member_of?(org_name)
+    return false if self.member_of.nil?
+    return false if self.member_of.empty?
+    self.member_of.include?(org_name)
   end
 
   ##

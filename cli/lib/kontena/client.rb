@@ -1,6 +1,7 @@
 require 'json'
 require 'excon'
 require 'uri'
+require 'base64'
 require_relative 'errors'
 require_relative 'cli/version'
 
@@ -37,7 +38,7 @@ module Kontena
       @logger.progname = 'CLIENT'
       @options[:default_headers] ||= {}
       Excon.defaults[:ssl_verify_peer] = false if ignore_ssl_errors?
-      @http_client = Excon.new(api_url)
+      @http_client = Excon.new(api_url, omit_default_port: true)
       @default_headers = {
         ACCEPT => CONTENT_JSON,
         CONTENT_TYPE => CONTENT_JSON,
@@ -45,6 +46,20 @@ module Kontena
       }.merge(options[:default_headers])
       @path_prefix = options[:path_prefix] || '/v1/'
       logger.debug "Client initialized with api_url: #{@api_url} token: #{token.nil?.to_s} token_parent: #{token['parent_type'] || 'none'} path_prefix: #{@path_prefix}"
+    end
+
+    def basic_auth_header
+      {
+        AUTHORIZATION => "Basic #{Base64.encode64([client_id, client_secret].join(':')).gsub(/[\r\n]/, '')}"
+      }
+    end
+
+    def client_id
+      ENV['KONTENA_CLIENT_ID'] || CLIENT_ID
+    end
+
+    def client_secret
+      ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET
     end
 
     def authentication_ok?(token_verify_path)
@@ -181,7 +196,6 @@ module Kontena
       request(path: path, query: params, headers: headers, response_block: response_block)
     end
 
-
     # Perform a HTTP request. Will try to refresh the access token if it's
     # expired or if the server responds with HTTP 401.
     #
@@ -199,14 +213,15 @@ module Kontena
       if auth && token && token.respond_to?(:expired?) && token.expired?
         raise Excon::Errors::Unauthorized, 'Token expired or not valid, you need to login again, use: kontena login'
       end
-      request_headers = request_headers(headers)
-      request_headers.delete(AUTHORIZATION) unless auth
+      request_headers = request_headers(headers, auth)
+      body_content = body.nil? ? '' : encode_body(body, request_headers[CONTENT_TYPE])
+      request_headers.merge!('Content-Length' => body_content.bytesize)
       request_options = {
           method: http_method,
           expects: Array(expects),
           path: path.start_with?('/') ? path : request_uri(path),
           headers: request_headers,
-          body: body.nil? ? nil : encode_body(body, request_headers[CONTENT_TYPE]),
+          body: body_content,
           query: query
       }
       request_options.merge!(response_block: response_block) if response_block
@@ -240,7 +255,6 @@ module Kontena
       response = request(
         http_method: :post,
         path: authorization_path,
-        auth: false,
         body: {
           #client_id: ENV['KONTENA_CLIENT_ID'] || CLIENT_ID,
           #client_secret: ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET,
@@ -274,9 +288,9 @@ module Kontena
     def refresh_request_params
       {
         refresh_token: token['refresh_token'],
-        grant_type: 'refresh_token',
-        client_id: ENV['KONTENA_CLIENT_ID'] || CLIENT_ID,
-        client_secret: ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET
+        grant_type: 'refresh_token'
+        #client_id: ENV['KONTENA_CLIENT_ID'] || CLIENT_ID,
+        #client_secret: ENV['KONTENA_CLIENT_SECRET'] || CLIENT_SECRET
       }
     end
 
@@ -297,7 +311,7 @@ module Kontena
         http_method: :post,
         path: path,
         body: refresh_request_params,
-        headers: { CONTENT_TYPE => CONTENT_URLENCODED },
+        headers: { CONTENT_TYPE => CONTENT_URLENCODED }.merge(basic_auth_header),
         expects: [200, 201, 400, 401, 403],
         auth: false
       )
@@ -305,13 +319,11 @@ module Kontena
         logger.debug "Got response to refresh request"
         token.access_token  = response['access_token']
         token.refresh_token = response['refresh_token']
-        expires_in = response['expires_in'].to_i
-        expires_at = expires_in + Time.now.utc.to_i
-        token.expires_at = expires_in < 1 ? 0 : expires_at
+        token.expires_at = in_to_at(response['expires_in'])
         token.config.write
         true
       else 
-        logger.debug 'Got null or bad response to refresh request'
+        logger.debug "Got null or bad response to refresh request: #{last_response.inspect}"
         false
       end
     rescue
@@ -330,7 +342,7 @@ module Kontena
       "#{path_prefix}#{path}"
     end
 
-    def authorization_header
+    def bearer_authorization_header
       if token['access_token']
         {AUTHORIZATION => "Bearer #{token['access_token']}"}
       else
@@ -345,8 +357,9 @@ module Kontena
     #
     # @param [Hash] headers
     # @return [Hash]
-    def request_headers(headers = {})
-      headers = @default_headers.merge(authorization_header).merge(headers)
+    def request_headers(headers = {}, auth = true)
+      headers = default_headers.merge(headers)
+      headers.merge!(bearer_authorization_header) if auth
       headers.reject{|_,v| v.nil? || (v.respond_to?(:empty?) && v.empty?)}
     end
 
